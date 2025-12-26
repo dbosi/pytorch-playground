@@ -3,6 +3,7 @@ import torchvision
 import torchmetrics
 import pathlib
 import utils.models
+import kornia
 
 ### CONSTANTS ###
 
@@ -27,36 +28,42 @@ device = torch.device(CUDA_DEVICE if torch.cuda.is_available() else CPU_DEVICE)
 
 ### DATASET ###
 
-cifar10_train_dataset = torchvision.datasets.CIFAR10(DATASET_PATH, train=True, transform=torchvision.transforms.ToTensor(), download=True)
+cifar10_train_dataset = torchvision.datasets.CIFAR10(DATASET_PATH, train=True, download=True)
 
-all_train_examples = torch.Tensor(cifar10_train_dataset.data)
+all_train_examples = torch.Tensor(cifar10_train_dataset.data).to(torch.float32)
+all_train_targets = torch.Tensor(cifar10_train_dataset.targets).to(torch.long)
 
 classes = cifar10_train_dataset.classes
 
 n_examples, img_h, img_w, n_channels = all_train_examples.shape
 
-channels_mean = all_train_examples.mean(dim=(0, 1, 2)) / 255.0
-channels_std = all_train_examples.std(dim=(0, 1, 2)) / 255.0
+all_train_examples = all_train_examples / 255.0
+
+channels_mean = all_train_examples.mean(dim=(0, 1, 2))
+channels_std = all_train_examples.std(dim=(0, 1, 2))
+
+all_train_examples = all_train_examples.permute(0, 3, 1, 2)
+
+dataset = torch.utils.data.TensorDataset(all_train_examples, all_train_targets)
 
 n_train = int(TRAIN_SET_PERCENTAGE * len(cifar10_train_dataset))
 n_val = len(cifar10_train_dataset) - n_train
 
-train_set, val_set = torch.utils.data.random_split(cifar10_train_dataset, [n_train, n_val])
-
-train_transforms = torchvision.transforms.Compose([
-    torchvision.transforms.RandomHorizontalFlip(0.5),
-    torchvision.transforms.RandomRotation(15),
-    torchvision.transforms.ColorJitter(0.2, 0.2, 0.2, 0.1),
-    torchvision.transforms.Normalize(mean=channels_mean, std=channels_std)
-])
-
-val_transforms = torchvision.transforms.Compose([
-    torchvision.transforms.Normalize(mean=channels_mean, std=channels_std)
-])
-
+train_set, val_set = torch.utils.data.random_split(dataset, [n_train, n_val])
 
 train_loader = torch.utils.data.DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
 val_loader = torch.utils.data.DataLoader(val_set, batch_size=BATCH_SIZE)
+
+train_augmentation = kornia.augmentation.AugmentationSequential(
+    kornia.augmentation.RandomHorizontalFlip(0.5),
+    kornia.augmentation.RandomRotation(15),
+    kornia.augmentation.ColorJitter(0.2, 0.2, 0.2, 0.1),
+    kornia.augmentation.Normalize(mean=channels_mean, std=channels_std)
+).to(device)
+
+val_augmentation = kornia.augmentation.AugmentationSequential(
+    kornia.augmentation.Normalize(mean=channels_mean, std=channels_std)
+).to(device)
 
 ### MODEL ###
 
@@ -77,7 +84,7 @@ for epoch in range(EPOCHS):
 
     for b, (x, y) in enumerate(train_loader):
         x = x.to(device)
-        x = torch.stack([train_transforms(img) for img in x])
+        x = train_augmentation(x)
         y = y.to(device)
 
         o = model(x)
@@ -106,7 +113,7 @@ for epoch in range(EPOCHS):
 
         for x, y in val_loader:
             x = x.to(device)
-            x = torch.stack([val_transforms(img) for img in x])
+            x = val_augmentation(x)
             y = y.to(device)
 
             o = model(x)
